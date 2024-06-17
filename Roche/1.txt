@@ -1,0 +1,142 @@
+/*@!Encoding:1252*/
+includes
+{
+  
+}
+
+variables
+{
+  char DeviceName[5] = "8952";
+  char parameter[255]="";
+}
+
+void SendSetCommand(char Command[])
+{
+  strncpy(parameter,"",elCount(0));
+  strncat(parameter,DeviceName,elcount(parameter));
+  strncat(parameter," ",elcount(parameter));
+  strncat(parameter,Command,elcount(parameter));
+  
+  write("%s",parameter);
+  
+  sysExec("PowerController.exe",parameter);
+  testStep("","Executed Command %s on power supply %s",Command,DeviceName);
+}
+
+float SendReadCommand(char Command[])
+{
+  char parameter[255]="";
+  dword g_fileHdl_dw;
+  char buf[255]="";
+  double readValue=-1;
+  
+  strncat(parameter,DeviceName,elcount(parameter));
+  strncat(parameter," ",elcount(parameter));
+  strncat(parameter,Command,elcount(parameter));
+  
+  //sysExec("PowerController.exe",parameter);
+  sysExec("read_current_channel1.bat","");
+  
+  testWaitForTimeout(3000);
+  
+  g_fileHdl_dw = OpenFileRead("readData.txt",0);
+  if(g_fileHdl_dw!=0 )
+    {
+        while ( fileGetString(buf,elcount(buf),g_fileHdl_dw)!=0 ) {};
+        testStep("","Command %s, read value %s",Command,buf);
+        strtod(buf,readValue);
+        write("current value %f",readValue);
+        fileClose (g_fileHdl_dw);
+        g_fileHdl_dw = 0;
+    }
+    else
+    {
+        write ("Error in opening file 'vehCfg.txt' for read access.");
+    }
+    return readValue;
+}
+
+export testfunction TF_SendSetCommand(char Command[])
+{
+  SendSetCommand(Command);
+}
+
+export testfunction TF_SendReadCommand(char Command[], char operator[], double expectedValue)
+{
+  float acquiredValue;
+  acquiredValue = SendReadCommand(Command);
+  
+  if(strncmp(operator,"<=",2)==0)
+  {
+    testStep("","Compare Mode : <=");
+    if(acquiredValue <= expectedValue)
+    {
+      testStepPass("","ExpectedValue : %s %f; ObtainedValue = %f",operator, expectedValue,acquiredValue);
+    }
+    else
+    {
+      testStepFail("","ExpectedValue : %s %f; ObtainedValue = %f",operator, expectedValue,acquiredValue);
+    }
+  }
+  else if(strncmp(operator,">=",2)==0)
+  { 
+    testStep("","Compare Mode : >=");
+    if(acquiredValue >= expectedValue)
+    {
+      testStepPass("","ExpectedValue : %s %f; ObtainedValue = %f",operator, expectedValue,acquiredValue);
+    }
+    else
+    {
+      testStepFail("","ExpectedValue : %s %f; ObtainedValue = %f",operator, expectedValue,acquiredValue);
+    }
+  }
+  else if(strncmp(operator,"==",2)==0)
+  { 
+    testStep("","Compare Mode : ==");
+    if(acquiredValue == expectedValue)
+    {
+      testStepPass("","ExpectedValue : %s %f; ObtainedValue = %f",operator, expectedValue,acquiredValue);
+    }
+    else
+    {
+      testStepFail("","ExpectedValue : %s %f; ObtainedValue = %f",operator, expectedValue,acquiredValue);
+    }
+  }
+  else if(strncmp(operator,"!=",2)==0)
+  { 
+    testStep("","Compare Mode : !=");
+    if(acquiredValue != expectedValue)
+    {
+      testStepPass("","ExpectedValue : %s %f; ObtainedValue = %f",operator, expectedValue,acquiredValue);
+    }
+    else
+    {
+      testStepFail("","ExpectedValue : %s %f; ObtainedValue = %f",operator, expectedValue,acquiredValue);
+    }
+  }
+  else if(strncmp(operator,">",1)==0)
+  {
+    testStep("","Compare Mode : >");
+    if(acquiredValue > expectedValue)
+    {
+      testStepPass("","ExpectedValue : %s %f; ObtainedValue = %f",operator, expectedValue,acquiredValue);
+    }
+    else
+    {
+      testStepFail("","ExpectedValue : %s %f; ObtainedValue = %f",operator, expectedValue,acquiredValue);
+    }
+  }
+  else if(strncmp(operator,"<",1)==0)
+  { 
+    testStep("","Compare Mode : <");
+    if(acquiredValue < expectedValue)
+    {
+      testStepPass("","ExpectedValue : %s %f; ObtainedValue = %f",operator, expectedValue,acquiredValue);
+    }
+    else
+    {
+      testStepFail("","ExpectedValue : %s %f; ObtainedValue = %f",operator, expectedValue,acquiredValue);
+    }
+  }
+    
+}

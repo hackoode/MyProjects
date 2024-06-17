@@ -1,0 +1,2193 @@
+/*@!Encoding:1252*/
+includes
+{
+ 
+}
+
+
+variables
+{  
+  char Op_Equal[255] = "==";
+  char Op_NEqual[255] = "!=";
+  char Op_SmalerThan[255] = "<";
+  char Op_SmalerThanOrEq[255] = "<=";
+  char Op_GreaterThan[255] = ">";
+  char Op_GreaterThanOrEq[255] = ">=";
+  char Op_Similar[255] = "=~";
+  char Op_BetweenThres[255] = "<>";
+  char Op_AbsoluteVal[255] = "||";
+  
+  /*Check flow of message*/
+  char FlowMessageName[255]="";
+  long MessageFlowTimeout = 10;
+  int MessageFlowing = 0;
+  msTimer MessageFlowTimeout_Timer;
+  
+  msTimer SendNM_Message;
+  
+  /*Variables to check the periodicity of message or PDU*/
+  float cycleTimeArray[5];
+  float min_CycleTime, max_CycleTime;
+  int i_CycleTimeIndex = 0;
+  char CycleTimeMessageName[255] = "";
+  long CycleTimeTimeout = 10;
+  int CycleTimeMessageFlowing = 0;
+  int CompleteCalculationFlag = 0;
+  msTimer CycleTimeMessageFlowTimeout_Timer;
+  
+  //message can1.NM_HCP1_XIX_HCP1_CANFD04 NM_msg = { dlc = 8,  byte(0)=0x0};
+  
+/*Periodicity Check*/
+  dword checkId,checkId1;
+  char message_name[100];
+  char wakeup_message_name[100];
+  int cycle_time_cnt=0;
+  long cycle_T1,cycle_T2,cycle_T3,cycle_T4,UserMin_cycle,UserMax_cycle;
+  dword  UserLongHeaderID;
+  int64 value=0;
+  int64 stbm_ms = 0; 
+  int Wakeup_Received=0,Message_Received=0, cycle_time_calculated = 0;
+  float diff, diff2, diff3;
+  
+  char XCP_Device[100] = "RadarFC";
+  char NM_Message[100] = "NM_HCP1_XIX_HCP1_CANFD04";
+  
+  dword  local_time;
+  
+  //Splitting up the XCP Variable
+  char Split_XCP_Namespace[255] = "";
+  char Split_XCP_Variable[255] = ""; 
+}
+
+
+on timer MessageFlowTimeout_Timer
+{
+  if((MessageFlowTimeout > 0) && (MessageFlowing==0))
+  {
+    setTimer(MessageFlowTimeout_Timer,5);
+    MessageFlowTimeout-=1;
+  }
+}
+
+on timer CycleTimeMessageFlowTimeout_Timer
+{
+  if(CompleteCalculationFlag==1)
+  {
+    //All message/PDU time stamp observed
+  }
+  else if((CycleTimeTimeout > 0) && (CycleTimeMessageFlowing==0))
+  {
+    setTimer(CycleTimeMessageFlowTimeout_Timer,5);
+    CycleTimeTimeout-=1; 
+  } 
+  
+  if(CycleTimeTimeout<=0)
+  {
+    //calculateCycleTime();
+  }
+}
+
+on timer SendNM_Message
+{
+  setTimer(SendNM_Message,450);
+  //output(NM_msg);
+}
+
+on message *
+{ 
+  if(MessageFlowing==0)
+  {       
+    if(strncmp(this.name,FlowMessageName,strlen(this.name))==0)
+    {
+      MessageFlowing = 1;
+    }
+  }
+  
+  if(strlen(CycleTimeMessageName) > 0)
+  {
+    if(strncmp(this.name,CycleTimeMessageName, strlen(this.name)) == 0)
+    {   
+      cycleTimeArray[i_CycleTimeIndex] = timeNowFloat() / 100;
+      i_CycleTimeIndex++;
+      CycleTimeMessageFlowing = 1;
+      CycleTimeMessageFlowTimeout_Timer.cancel();
+      
+      if(i_CycleTimeIndex == 5)
+      {
+        strncpy(CycleTimeMessageName, "", 0);
+        CompleteCalculationFlag = 1;
+        i_CycleTimeIndex = 0;
+      }
+    }
+  }
+}
+
+
+
+on PDU *
+{
+  local_time=0;
+  local_time=timeNow();
+  
+  if(strncmp(this.name, message_name, elcount(this.name))==0)
+  {   
+      if(cycle_time_cnt == 0)
+      {
+        cycle_T1 = local_time;
+        cycle_time_cnt = 1;
+        write("t1 = %ld",cycle_T1);
+      }
+      else if(cycle_time_cnt == 1)
+      {
+        if(cycle_T1 < local_time)
+        {
+          cycle_T2 = local_time;
+          cycle_time_cnt = 2;
+        }
+      }
+      else if(cycle_time_cnt == 2)
+      {
+        if(cycle_T2 < local_time)
+        {
+          cycle_T3 = local_time;
+          cycle_time_cnt = 3;
+          write("t3 = %ld",cycle_T3);
+        }
+      }
+      else if(cycle_time_cnt == 3)
+      {        
+        if(cycle_T3 < local_time)
+        {
+          cycle_T4 = cycle_T3 - cycle_T1;
+          write("Time Difference = %ld",cycle_T4);
+          cycle_time_cnt = -1;
+          testSupplyTextEvent("cycle_time_calculated");
+        }
+      }  
+          
+     //Check message flow flags
+     Message_Received=1;
+     TestSupplyTextEvent("Message_Received");
+     diff = timeNow() ; 
+  }           
+  
+  
+  if(MessageFlowing==0)
+  {       
+    if(strncmp(this.name,FlowMessageName,strlen(this.name))==0)
+    {
+      MessageFlowing = 1;
+    }
+  }
+
+  if(strncmp(this.name, wakeup_message_name, elcount(this.name))==0)
+  {
+    Wakeup_Received=1;
+    TestSupplyTextEvent("Wakeup_Received");
+    diff3 = timeNow(); 
+  }   
+  
+}
+
+void Split_XCP(char XCP_Var[])
+{
+  double TestValue =-1,calculatedValue = -1;
+  int Read_status;
+  double _xcpvalueRecieved;
+  long tempXCPValue;
+  double readValue;
+  int idx = -2, saved_index = 0, i;
+
+  idx = -2;
+  TestValue = -1;
+  calculatedValue = -1;
+  saved_index = 0;
+  
+  strncpy(Split_XCP_Variable,"",0);
+  strncpy(Split_XCP_Namespace,"",0);
+  strncpy(Split_XCP_Namespace, "XCP::",6);
+  
+  strncat(Split_XCP_Namespace,XCP_Device,strlen(XCP_Device) + strlen(Split_XCP_Namespace) + 1);
+  
+  if(strstr(XCP_Var,".") != -1)
+  {  
+    strncat(Split_XCP_Namespace,"::", 2  + strlen(Split_XCP_Namespace) + 1); 
+    
+    while (idx != -1)
+    {
+       saved_index++;
+       idx = strstr_off(XCP_Var,saved_index,".");
+       if(idx != -1)
+       {
+        saved_index = idx;
+       }
+    }
+    
+    i = strlen(Split_XCP_Namespace);
+    
+    for(idx = 0;idx < saved_index - 1; idx++)
+    {
+      if(XCP_Var[idx]=='.')
+      {
+        Split_XCP_Namespace[i++]=':';
+        Split_XCP_Namespace[i]=':';
+      }
+      else
+      {
+        Split_XCP_Namespace[i] = XCP_Var[idx];
+      }
+      i++;
+    }
+    Split_XCP_Namespace[i] = '\0';
+   
+    //teststep("","Length = %d",strlen(XCP_Var));
+    i = 0;
+    for(saved_index = saved_index; saved_index < strlen(XCP_Var); saved_index++)
+    {
+      Split_XCP_Variable[i] = XCP_Var[saved_index];
+      i++;
+    }  
+    Split_XCP_Variable[i] = '\0';
+  }
+  else
+  {
+    for(i = 0; i < strlen(XCP_Var); i++)
+    {
+      Split_XCP_Variable[i] = XCP_Var[i];
+    }
+    Split_XCP_Variable[i] = '\0';
+  }
+}
+
+void Check_Message_Flowing(char message_Name[], long timeout, int flowExpected )
+{
+  /*Set all the flags and variables initially*/
+  strncpy(FlowMessageName,message_Name,0);
+  
+ // MessageFlowTimeout = timeout;
+  MessageFlowing = 0;
+  
+  /*Start the Timer for Timeout*/
+ // setTimer(MessageFlowTimeout_Timer,5);
+  
+  /*Wait till the timer expires or the Message Flow is detected*/
+  testWaitForTimeout(timeout);
+  
+  testStep("","Message Flowing = %d", MessageFlowing);
+  
+  if(MessageFlowing == 0)
+  {
+    if(flowExpected==1)
+    {
+      testStepFail("","Message/PDU %s did not flow within %d",message_Name, timeout);
+    }
+    else
+    {
+      testStepPass("","Message/PDU %s did not flow within %d",message_Name, timeout);
+    }
+  }
+  else
+  {
+    if(flowExpected==1)
+    {
+      testStepPass("","Message/PDU %s flow detected",message_Name);
+    }
+    else
+    {
+      testStepFail("","Message/PDU %s flow detected",message_Name);
+    }
+  }
+}
+
+void Check_Message_Cycle_Time(char MessageName[], float minCycleTime, float maxCycleTime, long Timeout)
+{
+  int testResult=1; //initialize the test result to pass
+  float observedCycleTimes[4];
+  
+  /*Initialize variables*/
+  i_CycleTimeIndex = 4;
+  while(i_CycleTimeIndex >= 0)
+  {
+    cycleTimeArray[i_CycleTimeIndex] = 0;
+    i_CycleTimeIndex -= 1;
+  } 
+  i_CycleTimeIndex = 0;  
+  CompleteCalculationFlag = 0;
+  CycleTimeMessageFlowing = 0;
+  strncpy(CycleTimeMessageName,MessageName, strlen(MessageName)+1);
+  CycleTimeTimeout = Timeout;  
+  min_CycleTime=minCycleTime;
+  max_CycleTime=maxCycleTime;
+ 
+  //start Timeout check timer
+  setTimer(CycleTimeMessageFlowTimeout_Timer,5);
+  
+  //write("something");
+  
+  while((CompleteCalculationFlag == 0) && (CycleTimeTimeout >= 0));
+   
+  if(CycleTimeTimeout<=0) //verify if the timeout has happened for the PDU
+  {
+    testStepFail("","Timeout observed for the PDU");
+  }
+  else
+  {
+    i_CycleTimeIndex=1;
+    while(i_CycleTimeIndex<5)
+    {
+      observedCycleTimes[i_CycleTimeIndex-1] = cycleTimeArray[i_CycleTimeIndex] - cycleTimeArray[i_CycleTimeIndex - 1];
+      if ((observedCycleTimes[i_CycleTimeIndex-1] < min_CycleTime)||(observedCycleTimes[i_CycleTimeIndex-1] > max_CycleTime))
+      {
+        testResult = 0;
+      }      
+      i_CycleTimeIndex += 1;
+    }
+    
+    if(testResult == 0)
+    {
+      testStepFail("","Cycle Time out of Range. Observed cycle times ",observedCycleTimes[0], observedCycleTimes[1], observedCycleTimes[2], observedCycleTimes[3]);
+    }
+    else
+    {
+      testStepPass("","Cycle Time within Range. Observed cycle times ",observedCycleTimes[0], observedCycleTimes[1], observedCycleTimes[2], observedCycleTimes[3]);
+    }
+  }
+  
+  //calculateCycleTime();
+}
+
+
+export testfunction TF_Send_NM_Msg()
+{
+  setTimer(SendNM_Message,450);  
+}
+
+export testfunction TF_Cancel_NM_Msg()
+{
+  cancelTimer(SendNM_Message);
+}
+
+
+//stop_Tx_transmission()
+//{
+//  @IL::Klemme15 = 0;
+//  
+//  @IL::StartWithoutSending = 1;
+//  @IL::StartWithoutSending = 0;
+//}
+//  Resume_Tx_Transmission()
+//{
+//    @IL::Klemme15 = 1;  
+//  
+//    @IL::StartWithoutSending = 1;
+//    @IL::StartWithoutSending = 0;
+//}
+
+//export testfunction TF_Start_TX_Transmission()
+//{
+//  Resume_Tx_Transmission();
+//}
+
+export testfunction TF_Send_NM_Msg_once()
+{
+  initiate_NM_Transmission();  
+}
+
+//export testfunction TF_Stop_TX_Transmission()
+//{
+//  stop_Tx_transmission();
+//}
+
+initiate_NM_Transmission()
+{
+  Teststep("INFO", "Sending the NM Message");
+  //output(NM_msg);
+}
+
+export testfunction TF_Find_NM_WakeupTime(char msg_name[], int ecu_wakeupTime, int max_cycleTime, int msg_protocol)
+{
+  dword Ismsg_periodic;
+  int thresh_parameter;
+  long pdu_Notenabled;
+  dword NM_msg_id, msg_id;
+  float diff, diff2, diff3;
+
+  thresh_parameter = ecu_wakeupTime + max_cycleTime;
+ 
+  pdu_Notenabled = ChkConfig_EnablePDULayer();
+  
+  ChkConfig_SetPDUIDFormat(msg_protocol);
+
+  if (pdu_Notenabled == 0)
+  {
+  
+    NM_msg_id = getMessageID(NM_Message);
+    msg_id = getMessageID(msg_name);
+      
+    Teststep("INFO","Monitoring the first occurence of the NM message, wait for upto 10 seconds max");
+    initiate_NM_Transmission();
+    
+    if (testWaitForMessage(NM_msg_id,10000) == 1)// put actual NM here 
+    {
+      diff3 = timeNow(); 
+      write("diff3 %f", diff3);
+      if (msg_protocol == 1)
+      {  
+         if (testWaitForMessage(msg_id,10000) == 1)
+         {   
+            diff = timeNow() ;
+            Teststep("INFO","Monitoring the required COM message %s, first occurennce After NM", msg_name);
+            write("diff %f", diff); // CANalyzer 2.xx
+         }
+         else
+         {
+            testStep("INFO", "The message is not received even after 10 sec");
+            testStepFail("Info","The message is not received within 10 sec timeout");
+         } 
+      }
+      else if(msg_protocol == 2)
+      {
+         
+         if (testWaitForPDU(msg_name,0,10000) == 1)
+         {   
+            diff = timeNow() ;
+            Teststep("INFO","Monitoring the required COM message %s, first occurennce After NM", msg_name);
+            write("diff %f", diff); // CANalyzer 2.xx
+         }
+         else
+         {
+            testStep("INFO", "The message is not received even after 10 sec");
+            testStepFail("Info","The message is not received within 10 sec timeout");
+         } 
+      }
+        
+      diff2 =  (diff-diff3)/100.0 ;
+      write("dif %f", diff2);
+      if (diff2 <= thresh_parameter)
+      {
+        testStepPass("Info","The message received within Timeout %f - ms", diff2);
+      }
+      else
+      {
+        testStep("INFO", "The message is expected to wake up within %f - ms", thresh_parameter);
+        testStepFail("Info","The message is not received within specified threshold, but at %f- ms", diff2);
+      } 
+    }
+    else
+    {
+      testStepFail("Info","The NM message is not received");
+    }
+  }
+  else
+  {
+     testStepFail("Info","The message is not received due to PDU_notenabled");
+  }
+}
+
+export Testfunction TF_XCP_NM_WakeupTime(char sig_name[], int ecu_wakeupTime, char namespace_XCP[], char _xcpvariable2Read[], long _ExpectedValue,char wake_up_msg_name[], int cycle_time,int msg_protocol)
+{
+  int thresh_parameter;
+  long pdu_Notenabled;
+  dword NM_msg_id, msg_id;
+  thresh_parameter = ecu_wakeupTime;  
+
+ // stop_Tx_transmission(); 
+
+  testWaitForTimeout(5000);
+
+  pdu_Notenabled = ChkConfig_EnablePDULayer();
+
+  ChkConfig_SetPDUIDFormat(msg_protocol);
+
+  if (pdu_Notenabled == 0)
+  {
+
+  NM_msg_id = getMessageID(wake_up_msg_name);
+
+  Teststep("INFO","Monitoring the first occurence of the NM message, wait for upto 10 seconds max");
+  initiate_NM_Transmission();
+    
+  if (testWaitForMessage(NM_msg_id,10000) == 1)// put actual NM here 
+  {
+  //  Resume_Tx_Transmission();
+    testWaitForTimeout(thresh_parameter);
+    setsignal(sig_name,_ExpectedValue);
+    testWaitForTimeout(cycle_time);
+    XCP_to_Read(namespace_XCP,_xcpvariable2Read,_ExpectedValue);
+  }
+  }
+}
+
+export testfunction TF_Get_Msg_Cycle_Time(char s_msg_name[], int min_cycleTime, int max_cycleTime, int msg_protocol, int No_of_Samples, int Passed_Count)
+{
+   
+  dword Ismsg_periodic;
+  long pdu_Notenabled;
+
+  int monitoring_time  = 5000;
+  dword msg_len = 2;
+  dword msg_id;
+  long time;
+  int Sample_Count=0,Pass=0,Fail =0;
+  cycle_time_cnt=0;
+  
+  strncpy(message_name,s_msg_name,elcount(s_msg_name));
+
+      UserMin_cycle=min_cycleTime;
+      UserMax_cycle=max_cycleTime;
+      
+      Pass = 0;
+      Fail = 0;
+  
+      while( Sample_Count < No_of_Samples)
+      {
+        cycle_T1 = cycle_T2 = cycle_T3 = cycle_T4 = 0;
+        cycle_time_cnt = 0;        
+                
+        testWaitForTextEvent("cycle_time_calculated",1000000);
+                
+        Write("Difference = %ld",cycle_T4);             
+        
+        if(msg_protocol == 1)
+        {
+          cycle_T4 = cycle_T4/200;
+        }
+        else if(msg_protocol == 2)
+        {
+          cycle_T4 = cycle_T4/100;
+        }
+        
+        if((UserMin_cycle <= cycle_T4) && (UserMax_cycle >= cycle_T4))
+        {                  
+          Pass++;
+          testStep ("","Time difference :%d", cycle_T4);                  
+        }
+        else
+        {
+          Fail++;
+          testStep ("","Fail::Time difference :%d", cycle_T4);                 
+        }    
+       
+        Sample_Count++;
+      }
+      
+      if (Pass >= Passed_Count)
+      {
+        Sample_Count = 0;
+        testStepPass("The Cycle time is  within ","Range:[minCycleTime:%d], [maxCycleTime:%d], Pass Count = %d", min_cycleTime, max_cycleTime, Pass);
+      }
+      else 
+      {
+        Sample_Count = 0;
+        testStepFail("The Cycle time is not within ","Range:[minCycleTime:%d], [maxCycleTime:%d], Pass Count = %d", min_cycleTime, max_cycleTime, Pass);
+      }
+  
+  strncpy(message_name,"",0);
+}
+
+void Signal_Physical_Value_Check(char BusSignal[], double factor, double offset, double expectedRawValue)
+{
+  double TestValue =-1,calculatedValue = -1;
+  
+  TestValue = getSignal(BusSignal);
+  testStep("","Signal %s has value = %lf",BusSignal, TestValue);
+  calculatedValue = (double)( expectedRawValue * factor) + offset;
+  
+  if(calculatedValue == TestValue)
+  {
+    testStepPass("","Expected Value = %lf, Obtained Value = %lf",calculatedValue, TestValue);
+  }
+  else if((calculatedValue < 0) && (calculatedValue >- 1))
+  {
+    if(TestValue < calculatedValue)
+    {
+      if(TestValue > (0.95 * calculatedValue))
+      {
+        testStepPass("","Expected Value = %lf, Obtained Value = %lf",calculatedValue, TestValue);
+      }
+      else
+      {
+        testStepFail("","Expected Value = %lf, Obtained Value = %lf",calculatedValue, TestValue);
+      }
+    }
+    else if(TestValue > calculatedValue)
+    {
+      if(TestValue < (1.05 * calculatedValue))
+      {
+        testStepPass("","Expected Value = %lf, Obtained Value = %lf",calculatedValue, TestValue);
+      }
+      else
+      {
+        testStepFail("","Expected Value = %lf, Obtained Value = %lf",calculatedValue, TestValue);
+      }
+    }
+    else
+    {
+      testStepFail("","Expected Value = %lf, Obtained Value = %lf",calculatedValue, TestValue);
+    }
+  }
+  else
+  {
+    testStepFail("","Expected Value = %lf, Obtained Value = %lf",calculatedValue, TestValue);
+  }
+}
+
+export testfunction TF_Signal_Physical_Value_Check(char BusSignal[], double factor, double offset, double expectedRawValue)
+{
+  Signal_Physical_Value_Check(BusSignal, factor, offset, expectedRawValue);
+}
+
+/*Compare XCP with Signal*/
+void XCP_Signal_Compare(char testSignal[], char namespace_XCP[], char _xcpvariable2Read[], double factor, double offset)
+{
+  double TestValue =-1,calculatedValue = -1;
+  int Read_status;
+  double _xcpvalueRecieved;
+  long tempXCPValue;
+  
+  TestValue = getSignal(testSignal);
+  
+  testStep("","Signal %s has value = %f",testSignal,TestValue);
+    
+  if(sysGetVariableSVType(lookupSysvar(namespace_XCP, _xcpvariable2Read)) == 1)
+  {
+    Read_status = sysGetVariableFloat(namespace_XCP, _xcpvariable2Read, _xcpvalueRecieved);
+  }
+  else
+  {
+    Read_status = sysGetVariableInt(namespace_XCP, _xcpvariable2Read, tempXCPValue);
+    _xcpvalueRecieved = (double)tempXCPValue;
+  }
+  
+  //Read_status = SysGetVariableInt(namespace_XCP, _xcpvariable2Read, _xcpvalueRecieved);  
+  calculatedValue = ( (double)_xcpvalueRecieved * factor) + offset;
+  testStep("","Calculated XCP value = %lf",calculatedValue);
+  
+  if(Read_status==0)
+  {
+    if((int)((calculatedValue-TestValue)*1000000) == 0)
+    {    
+     testStepPass("","XCP Variable %s::%s is %lf ", namespace_XCP, _xcpvariable2Read, TestValue);
+    }
+    else
+    {
+     testStepfail("", "XCP Variable %s::%s is not written. Obtained value is %lf ", namespace_XCP, _xcpvariable2Read, calculatedValue);
+    }
+  }
+  else
+    {
+      if(Read_status == 2)
+      {
+        testStepErrorInTestSystem("","Error reading XCP var %s::%s, Return Val: %d - Variable was not found", namespace_XCP, _xcpvariable2Read, Read_status);
+      } 
+      else if(Read_status == 4)
+      {
+        testStepErrorInTestSystem("","Error reading XCP var, Return Val: %d - Variable has no suitable type for the function", namespace_XCP, _xcpvariable2Read, Read_status);
+      }
+      else
+      {
+        testStepErrorInTestSystem("","Error reading XCP var, Return Val: %d - Unkown", namespace_XCP, _xcpvariable2Read, Read_status);
+      }
+    }
+}
+
+void XCP_Signal_Compare_Precondition(char testSignal[], char namespace_XCP[], char _xcpvariable2Read[], char xcp_precondition_var[], double preconditionValue, double factor, double offset)
+{
+  double TestValue =-1,calculatedValue = -1;
+  int Read_status;
+  long tempXCPValue;
+  double _xcpvalueRecieved = -1, obtainedPreconditionValue;
+ 
+  TestValue = getSignal(testSignal);
+  testStep("","Signal %s has value = %f",testSignal,TestValue);
+  
+  if(sysGetVariableSVType(lookupSysvar(namespace_XCP, _xcpvariable2Read)) == 1)
+  {
+    Read_status = sysGetVariableFloat(namespace_XCP, _xcpvariable2Read, obtainedPreconditionValue);
+  }
+  else
+  {
+    Read_status = sysGetVariableInt(namespace_XCP, _xcpvariable2Read, tempXCPValue);
+    obtainedPreconditionValue = (double)tempXCPValue;
+  }
+  
+  if(Read_status == 0)
+  {
+    if((((int)(obtainedPreconditionValue - preconditionValue)) * 1000000) == 0)
+    {    
+      testStep("","XCP variable %s::%s has value %d", namespace_XCP, xcp_precondition_var, obtainedPreconditionValue);   
+      
+      if(sysGetVariableSVType(lookupSysvar(namespace_XCP, _xcpvariable2Read)) == 1)
+      {
+        Read_status = sysGetVariableFloat(namespace_XCP, _xcpvariable2Read, _xcpvalueRecieved);
+      }
+      else
+      {
+        Read_status = sysGetVariableInt(namespace_XCP, _xcpvariable2Read, tempXCPValue);
+        _xcpvalueRecieved = (double)tempXCPValue;
+      }
+      
+      calculatedValue = (double)( _xcpvalueRecieved * factor) + offset;      
+      
+      if(Read_status==0)
+      {
+        if((int)((calculatedValue - TestValue) * 1000000) == 0)
+        {    
+         testStepPass("","XCP Variable %s::%s is %lf ", namespace_XCP, _xcpvariable2Read, TestValue);
+        }
+        else
+        {
+         testStepfail("", "XCP Variable %s::%s is not written. Obtained value is %lf ", namespace_XCP, _xcpvariable2Read, calculatedValue);
+        }
+      }
+      else
+        {
+          if(Read_status == 2)
+          {
+            testStepErrorInTestSystem(_xcpvariable2Read,"Error reading XCP var, Return Val: %d - Variable was not found", Read_status);
+          } 
+          else if(Read_status == 4)
+          {
+            testStepErrorInTestSystem(_xcpvariable2Read,"Error reading XCP var, Return Val: %d - Variable has no suitable type for the function", Read_status);
+          }
+          else
+          {
+            testStepErrorInTestSystem(_xcpvariable2Read,"Error reading XCP var, Return Val: %d - Unkown", Read_status);
+          }
+        }
+    }
+    else
+    {
+      testStepInconclusive("","XCP variable %s::%s doesn't fulfill the preconditions and has value %d", namespace_XCP, xcp_precondition_var, obtainedPreconditionValue);
+    }
+  }
+  else
+  {
+    if(Read_status == 2)
+    {
+      testStepErrorInTestSystem("","Error reading XCP var %s::%s, Return Val: %d - Variable was not found",namespace_XCP, xcp_precondition_var, Read_status);
+    } 
+    else if(Read_status == 4)
+    {
+      testStepErrorInTestSystem("","Error reading XCP var %s::%s, Return Val: %d - Variable has no suitable type for the function",namespace_XCP, xcp_precondition_var, Read_status);
+    }
+    else
+    {
+      testStepErrorInTestSystem("","Error reading XCP var %s::%s, Return Val: %d - Unkown", namespace_XCP, xcp_precondition_var, Read_status);
+    }
+  }
+}
+
+
+/* Read XCP varaible values*/
+void XCP_to_Read(char namespace_XCP[], char _xcpvariable2Read[], double _ExpectedValue)
+{
+  long Read_status;
+  double _xcpvalueRecieved;
+  long tempXCPValue;
+  /*Set the XCP variables which correspnds to be tested*/
+  testStep("","XCP Variable Type = %d",sysGetVariableSVType(lookupSysvar(namespace_XCP, _xcpvariable2Read)));
+  if(sysGetVariableSVType(lookupSysvar(namespace_XCP, _xcpvariable2Read)) == 1)
+  {
+    Read_status = sysGetVariableFloat(namespace_XCP, _xcpvariable2Read, _xcpvalueRecieved);
+  }
+  else
+  {
+    Read_status = sysGetVariableInt(namespace_XCP, _xcpvariable2Read, tempXCPValue);
+    _xcpvalueRecieved = (double)tempXCPValue;
+  }
+  teststep("","expected value %lf",_ExpectedValue);  
+   
+  TestWaitForTimeout(100);
+  
+  if(Read_status==0)
+  {
+    if(_ExpectedValue == 0.000)
+    {
+     testStepPass("","XCP Variable %s::%s is %lf ", namespace_XCP, _xcpvariable2Read, _ExpectedValue);
+    }
+    else if((int)((_xcpvalueRecieved - _ExpectedValue)*1000000) == 0)
+    {
+     testStepPass("","XCP Variable %s::%s is %lf ", namespace_XCP, _xcpvariable2Read, _ExpectedValue);
+    }
+    else
+    {
+     testStepfail("", "XCP Variable %s::%s does not have expected value. Obtained value is %lf ", namespace_XCP, _xcpvariable2Read, _xcpvalueRecieved);
+    }
+  }
+  else
+  {
+    if(Read_status == 2)
+    {
+      testStepErrorInTestSystem(_xcpvariable2Read,"Error reading XCP var, Return Val: %d - Variable was not found", Read_status);
+    } 
+    else if(Read_status == 4)
+    {
+      testStepErrorInTestSystem(_xcpvariable2Read,"Error reading XCP var, Return Val: %d - Variable has no suitable type for the function", Read_status);
+    }
+    else
+    {
+      testStepErrorInTestSystem(_xcpvariable2Read,"Error reading XCP var, Return Val: %d - Unkown", Read_status);
+    }
+  }
+}
+
+export testfunction TF_Check_Message_Flow(char Message_PDU_Name[], long Timeout, int flowExpected)
+{
+  Check_Message_Flowing(Message_PDU_Name,Timeout,flowExpected);
+}
+
+/*Connecting XCP with ECU*/
+XCP_connection(char ECU_Name[])
+{
+  int ret_conn;
+  
+  if(xcpIsConnected(ECU_Name)== 1)
+  {
+      testStepPass("2", "XCP is connected");
+  }
+  else
+  {
+    xcpConnect(ECU_Name); 
+    TestWaitForTimeout(5000);
+    ret_conn=xcpIsConnected(ECU_Name);
+    if(ret_conn== 1)
+    {
+      testStepPass("1", "XCP is connected,ret_conn=%d",ret_conn);        
+    }
+    else
+    {
+      testStepFail("XCP is not connected","Check Proper A2L file loaded,ret_conn=%d",ret_conn); 
+      teststep("","ret_conn==0-> XCP not connected, ret_conn==-1-> A device with this name does not exist");        
+    }
+  } 
+}
+
+export testfunction TF_Connect_XCP()
+{
+  XCP_connection(XCP_Device);
+}
+
+export testfunction TF_Disconnect_XCP()
+{
+  XCP_disconnect(XCP_Device);
+}
+
+/*Disconnecting XCP*/
+void XCP_Disconnect(char ECU_Name[])
+{
+  int ret_disconn;
+  
+  if(xcpIsConnected(ECU_Name)==0)
+  {
+    testStepPass("2", "XCP is disconnected");
+  }
+  else
+  {
+    ret_disconn=xcpDisconnect(ECU_Name);
+    TestWaitForTimeout(5000);
+  
+    if(ret_disconn==0)
+    {
+      testStepPass("1", "XCP is disconnected");
+    }
+    else
+    {
+      testStepFail("", "XCP still not disconnected and Error code is %d ", ret_disconn);
+    }   
+  }  
+}
+
+void XCP_to_Read_MultipleMempool_Conditional(char namespace_XCP[], char _xcpvariable2Read[], char condition[], long _ExpectedValue, int MinMempoolCount, int MaxMempoolCount)
+{
+  long i=0;
+  int index = -1;
+  int passFlag = 0;
+  long Read_status;
+  long _xcpvalueRecieved;
+  char singleXCPVar[255]="";
+  
+  index = strstr(namespace_XCP,"@");
+  
+  if(index == -1)
+  {
+    testStepErrorInTestSystem("","Mempool Character not found");
+  }
+  else
+  {
+    for(i = (48 + MinMempoolCount); i <= (MaxMempoolCount + 48); i++)
+    {
+      Read_status = -1;
+      _xcpvalueRecieved = -1;
+          
+      strncpy(singleXCPVar,"",elcount(0));
+      strncpy(singleXCPVar,namespace_XCP,elcount(namespace_XCP));
+      singleXCPVar[index]=(i);
+      write("temp %s", index);
+      
+      Read_status = SysGetVariableInt(singleXCPVar, _xcpvariable2Read, _xcpvalueRecieved);
+      
+      //TestWaitForTimeout(1000);
+  
+      if(Read_status==0)
+      {
+        if(strncmp(condition,"==",2))
+        {
+          if(_xcpvalueRecieved==_ExpectedValue)        
+          {        
+            testStep("","XCP Variable %s::%s is %d ", singleXCPVar, _xcpvariable2Read, _ExpectedValue);
+            passFlag = 1;
+          }
+          else
+          {
+             testStep("","XCP Variable %s::%s is %d ", singleXCPVar, _xcpvariable2Read, _ExpectedValue);
+          }
+        }
+        else if(strncmp(condition,"!=",2))
+        {
+           if(_xcpvalueRecieved!=_ExpectedValue)        
+            {        
+              testStep("","XCP Variable %s::%s is %d ", singleXCPVar, _xcpvariable2Read, _ExpectedValue);
+              passFlag = 1;
+            }
+            else
+            {
+               testStep("","XCP Variable %s::%s is %d ", singleXCPVar, _xcpvariable2Read, _ExpectedValue);
+            }
+        }
+        else if(strncmp(condition,"<=",2))
+        {
+           if(_xcpvalueRecieved<=_ExpectedValue)        
+            {        
+              testStep("","XCP Variable %s::%s is %d ", singleXCPVar, _xcpvariable2Read, _ExpectedValue);
+              passFlag = 1;
+            }
+            else
+            {
+               testStep("","XCP Variable %s::%s is %d ", singleXCPVar, _xcpvariable2Read, _ExpectedValue);
+            }
+        }
+        else if(strncmp(condition,">=",2))
+        {
+           if(_xcpvalueRecieved>=_ExpectedValue)        
+            {        
+              testStep("","XCP Variable %s::%s is %d ", singleXCPVar, _xcpvariable2Read, _ExpectedValue);
+              passFlag = 1;
+            }
+            else
+            {
+               testStep("","XCP Variable %s::%s is %d ", singleXCPVar, _xcpvariable2Read, _ExpectedValue);
+            }
+        }
+        else if(strncmp(condition,">",1))
+        {
+           if(_xcpvalueRecieved>_ExpectedValue)        
+            {        
+              testStep("","XCP Variable %s::%s is %d ", singleXCPVar, _xcpvariable2Read, _ExpectedValue);
+              passFlag = 1;
+            }
+            else
+            {
+               testStep("","XCP Variable %s::%s is %d ", singleXCPVar, _xcpvariable2Read, _ExpectedValue);
+            }
+        }
+        else if(strncmp(condition,"<",1))
+        {
+           if(_xcpvalueRecieved<_ExpectedValue)        
+            {        
+              testStep("","XCP Variable %s::%s is %d ", singleXCPVar, _xcpvariable2Read, _ExpectedValue);
+              passFlag = 1;
+            }
+            else
+            {
+               testStep("","XCP Variable %s::%s is %d ", singleXCPVar, _xcpvariable2Read, _ExpectedValue);
+            }
+        }
+        else
+        {
+          testStep("", "XCP Variable %s::%s is not written,Error code number is %d. Obtained value is %d ", singleXCPVar, _xcpvariable2Read, Read_status, _xcpvalueRecieved);
+        }
+      }
+      else
+      {
+        if(Read_status == 2)
+        {
+          testStepErrorInTestSystem(_xcpvariable2Read,"Error reading XCP var, Return Val: %d - Variable was not found", Read_status);
+        } 
+        else if(Read_status == 4)
+        {
+          testStepErrorInTestSystem(_xcpvariable2Read,"Error reading XCP var, Return Val: %d - Variable has no suitable type for the function", Read_status);
+        }
+        else
+        {
+          testStepErrorInTestSystem(_xcpvariable2Read,"Error reading XCP var, Return Val: %d - Unkown", Read_status);
+        }
+      }
+    }
+  }
+  
+  if(passFlag == 1)
+  {
+    testStepPass("","Expected Value observed in atleast one mempool");
+  }
+  else
+   {
+     testStepFail("","Expected Value not observed in any mempool");
+   } 
+}
+
+void XCP_to_Read_MultiMempool(char namespace_XCP[], char _xcpvariable2Read[], int MinMempoolCount, int MaxMempoolCount, double _ExpectedValue)
+{
+  long i=0;
+  int index = -1;
+  int passFlag = 0;
+  long Read_status, tempXCPValue;
+  double _xcpvalueRecieved;
+  char singleXCPVar[255]="";
+  
+  passFlag = 0;
+  index = strstr(namespace_XCP,"@");
+  
+  if(index == -1)
+  {
+    testStepErrorInTestSystem("","Mempool Character not found");
+  }
+  else
+  {
+    for(i = (48 + MinMempoolCount); i <= (MaxMempoolCount + 48); i++)
+    {
+      Read_status = -1;
+      _xcpvalueRecieved = -1;      
+          
+      strncpy(singleXCPVar,"",elcount(0));
+      strncpy(singleXCPVar,namespace_XCP,elcount(namespace_XCP));
+      singleXCPVar[index]=(char)i;
+      
+      if(sysGetVariableSVType(lookupSysvar(singleXCPVar, _xcpvariable2Read)) == 1)
+      {
+        Read_status = sysGetVariableFloat(singleXCPVar, _xcpvariable2Read, _xcpvalueRecieved);
+      }
+      else
+      {
+        Read_status = sysGetVariableInt(singleXCPVar, _xcpvariable2Read, tempXCPValue);
+        _xcpvalueRecieved = (double)tempXCPValue;
+      }
+      
+      if(Read_status==0)
+      {
+        if((int)((_xcpvalueRecieved - _ExpectedValue)*100000) == 0)       
+        {        
+          testStep("","XCP Variable %s::%s is %lf ", singleXCPVar, _xcpvariable2Read, _ExpectedValue);
+          passFlag = 1;
+        }
+        else
+        {
+          testStep("", "XCP Variable %s::%s is not written,Error code number is %d. Obtained value is %lf ", singleXCPVar, _xcpvariable2Read, Read_status, _xcpvalueRecieved);
+        }
+      }
+      else
+      {
+        if(Read_status == 2)
+        {
+          testStepErrorInTestSystem(_xcpvariable2Read,"Error reading XCP var, Return Val: %d - Variable was not found", Read_status);
+        } 
+        else if(Read_status == 4)
+        {
+          testStepErrorInTestSystem(_xcpvariable2Read,"Error reading XCP var, Return Val: %d - Variable has no suitable type for the function", Read_status);
+        }
+        else
+        {
+          testStepErrorInTestSystem(_xcpvariable2Read,"Error reading XCP var, Return Val: %d - Unkown", Read_status);
+        }
+      }
+    }
+  }
+  
+  if(passFlag == 1)
+  {
+    testStepPass("","Expected Value observed in atleast one mempool");
+  }
+  else
+   {
+     testStepFail("","Expected Value not observed in any mempool");
+   } 
+  
+}
+
+void XCP_to_ServiceSignal_Compare(char namespace_XCP[], char _xcpvariable2Read[], char Service_Signal[])
+{
+  long Read_status;
+  double _xcpvalueRecieved;
+  long tempXCPValue;
+  double _ExpectedValue;
+   
+  GetServiceSignal(Service_Signal,_ExpectedValue);
+  teststep("","Service Signal %s has value %lf",Service_Signal,_ExpectedValue);  
+  
+  /*Set the XCP variables which correspnds to be tested*/
+  testStep("","XCP Variable Type = %d",sysGetVariableSVType(lookupSysvar(namespace_XCP, _xcpvariable2Read)));
+  if(sysGetVariableSVType(lookupSysvar(namespace_XCP, _xcpvariable2Read)) == 1)
+  {
+    Read_status = sysGetVariableFloat(namespace_XCP, _xcpvariable2Read, _xcpvalueRecieved);
+  }
+  else
+  {
+    Read_status = sysGetVariableInt(namespace_XCP, _xcpvariable2Read, tempXCPValue);
+    _xcpvalueRecieved = (double)tempXCPValue;
+  }
+   
+  TestWaitForTimeout(100);
+  
+  if(Read_status==0)
+  {
+    if((int)((_xcpvalueRecieved - _ExpectedValue)*100000) == 0)
+    {
+     testStepPass("","XCP Variable %s::%s is %lf ", namespace_XCP, _xcpvariable2Read, _ExpectedValue);
+    }
+    else
+    {
+     testStepfail("", "XCP Variable %s::%s does not have expected value, Error code number is %d. Obtained value is %lf ", namespace_XCP, _xcpvariable2Read, Read_status, _xcpvalueRecieved);
+    }
+  }
+  else
+    {
+      if(Read_status == 2)
+      {
+        testStepErrorInTestSystem(_xcpvariable2Read,"Error reading XCP var, Return Val: %d - Variable was not found", Read_status);
+      } 
+      else if(Read_status == 4)
+      {
+        testStepErrorInTestSystem(_xcpvariable2Read,"Error reading XCP var, Return Val: %d - Variable has no suitable type for the function", Read_status);
+      }
+      else
+      {
+        testStepErrorInTestSystem(_xcpvariable2Read,"Error reading XCP var, Return Val: %d - Unkown", Read_status);
+      }
+    }
+}
+
+// Function to write values through XCP variables
+void XCP_to_Write(char namespace_XCP[], char _xcpvariable2Set[], double _xcpvalue2Write)
+{
+  int status, type;
+
+  /*Set the XCP variables which correspnds to be tested*/
+  teststep("_xcpvariable2Set %s=%d",_xcpvariable2Set,_xcpvalue2Write);
+  
+  type = sysGetVariableSVType(lookupSysvar(namespace_XCP,_xcpvariable2Set));
+  
+  if(type == 1)
+  {
+    testStepErrorInTestSystem("","XCP Variable %s::%s not found",namespace_XCP,_xcpvariable2Set);
+    return;
+  }
+  else if(type == 0)
+  {
+    status = sysSetVariableFloat(namespace_XCP, _xcpvariable2Set, _xcpvalue2Write);
+  }
+  else if(type == 2)
+  {
+    status = sysSetVariableInt(namespace_XCP, _xcpvariable2Set, (int)_xcpvalue2Write);
+  }
+  else if(type == 6)
+  {
+    status = sysSetVariableInt(namespace_XCP, _xcpvariable2Set, (int64)_xcpvalue2Write);
+  }
+  
+  if(status == 0)
+  {
+    testStepPass("","XCP Variable %s::%s is %d ", namespace_XCP, _xcpvariable2Set, _xcpvalue2Write);
+  }
+  else
+  {
+    testStepfail("", "XCP Variable %s::%s is not written,Error code number is %d ", namespace_XCP, _xcpvariable2Set, status);
+  }
+ 
+}
+
+/* Function to write values through XCP variables and wait until value is set.
+   This Function is reporting if XCP was successfully set and after how long it was done,
+   In the case that XCP variable was NOT set after 1 sec., it will be tried again up to 5 times. */
+ void XCP_to_Write_and_WaitUntilSet(char namespace_XCP[], char _xcpvariable2Set[], int _xcpvalue2Write)
+{
+  int status, isVariableSet, tryCnt, maxTryCnt;
+  long setTime, tryWaitTime;
+  dword timeStep;
+  long Read_status;
+
+  long _xcpvalueRecieved;
+  
+  timeStep = 10; //10ms
+  isVariableSet = 0;
+  tryCnt = 0;
+  tryWaitTime = 1000;
+
+  /*Set the XCP variables which correspnds to be tested*/
+  teststep("_xcpvariable2Set %s=%d",_xcpvariable2Set,_xcpvalue2Write);
+  
+  do{
+    tryCnt += 1;  //increase try counter
+    setTime = 0;
+    
+    status = SysSetVariableInt(namespace_XCP, _xcpvariable2Set, _xcpvalue2Write); 
+  //  TestWaitForTimeout(1000);
+    
+    if(status==0) //if _xcpvariable2Set was set without error
+    {
+      do{
+        TestWaitForTimeout(timeStep); //wait 10ms
+        setTime = setTime + timeStep; //calculate transcurred time
+        
+        Read_status = SysGetVariableInt(namespace_XCP, _xcpvariable2Set, _xcpvalueRecieved);  //read value of resently set variable
+        if (_xcpvalueRecieved == _xcpvalue2Write && Read_status == 0){  //if read value = set value
+          isVariableSet = 1;
+        }
+      } while(isVariableSet!=1 && setTime < tryWaitTime);
+      
+      if (isVariableSet == 1){
+        //Nothing to do, it goes to the end of the function for setting the verdict.
+      } else {
+        testStep("", "XCP Variable %s::%s is NOT written at try Nr.: %d", namespace_XCP, _xcpvariable2Set, tryCnt);
+      }
+    }
+    else
+    {
+      testStep("XCP Error", "XCP Variable %s::%s is not written at try Nr.: %d. Error Code: %d ", namespace_XCP, _xcpvariable2Set, tryCnt, status);
+      testStep("ErrorCode", "     [1]:Name space not found; [2]:Variable not found; [3]:No writing right; [4]:variable type missmatch ");
+      TestStep("","Wait (100ms)");
+      TestWaitForTimeout(100); //wait 100ms for next try
+    }
+  }while(isVariableSet != 1 && tryCnt < 5);
+  
+  //Set verdict: 
+  //Pass if xcp variable successfully set, Fail if not.
+  if (isVariableSet == 1){
+    testStepPass("", "XCP Variable %s::%s successfully set to: %d; after %d ms at try Nr.: %d", namespace_XCP, _xcpvariable2Set, _xcpvalue2Write, setTime, tryCnt);
+  } else {
+    testStepFail("", "XCP Variable %s::%s NOT written after %d tries.", namespace_XCP, _xcpvariable2Set, tryCnt);
+  }
+  
+}
+/* Function to write values through XCP variables and wait until value is set.
+   This Function is reporting if XCP was successfully set and after how long it was done,
+   In the case that XCP variable was NOT set after 1 sec., it will be tried again up to 5 times. */
+ void XCP_to_Write_and_WaitUntilSetLongValues(char namespace_XCP[], char _xcpvariable2Set[], long _xcpvalue2Write)
+{
+  int status, isVariableSet, tryCnt, maxTryCnt;
+  long setTime, tryWaitTime;
+  dword timeStep;
+  long Read_status;
+
+  long _xcpvalueRecieved;
+  
+  timeStep = 10; //10ms
+  isVariableSet = 0;
+  tryCnt = 0;
+  tryWaitTime = 1000;
+
+  /*Set the XCP variables which correspnds to be tested*/
+  //teststep("_xcpvariable2Set %s=%d",_xcpvariable2Set,_xcpvalue2Write);
+  teststep("_xcpvariable2Set %s=%ld",_xcpvariable2Set,_xcpvalue2Write);
+  
+  do{
+    tryCnt += 1;  //increase try counter
+    setTime = 0;
+    
+   //status = SysSetVariableInt(namespace_XCP, _xcpvariable2Set, _xcpvalue2Write); 
+      status = sysSetVariableLongLong(namespace_XCP, _xcpvariable2Set, _xcpvalue2Write); 
+  //  TestWaitForTimeout(1000);
+    
+    if(status==0) //if _xcpvariable2Set was set without error
+    {
+      do{
+        TestWaitForTimeout(timeStep); //wait 10ms
+        setTime = setTime + timeStep; //calculate transcurred time
+        
+        Read_status = SysGetVariableInt(namespace_XCP, _xcpvariable2Set, _xcpvalueRecieved);  //read value of resently set variable
+        if (_xcpvalueRecieved == _xcpvalue2Write && Read_status == 0){  //if read value = set value
+          isVariableSet = 1;
+        }
+      } while(isVariableSet!=1 && setTime < tryWaitTime);
+      
+      if (isVariableSet == 1){
+        //Nothing to do, it goes to the end of the function for setting the verdict.
+      } else {
+        testStep("", "XCP Variable %s::%s is NOT written at try Nr.: %d", namespace_XCP, _xcpvariable2Set, tryCnt);
+      }
+    }
+    else
+    {
+      testStep("XCP Error", "XCP Variable %s::%s is not written at try Nr.: %d. Error Code: %d ", namespace_XCP, _xcpvariable2Set, tryCnt, status);
+      testStep("ErrorCode", "     [1]:Name space not found; [2]:Variable not found; [3]:No writing right; [4]:variable type missmatch ");
+      TestStep("","Wait (100ms)");
+      TestWaitForTimeout(100); //wait 100ms for next try
+    }
+  }while(isVariableSet != 1 && tryCnt < 5);
+  
+  //Set verdict: 
+  //Pass if xcp variable successfully set, Fail if not.
+  if (isVariableSet == 1){
+    testStepPass("", "XCP Variable %s::%s successfully set to: %ld; after %d ms at try Nr.: %d", namespace_XCP, _xcpvariable2Set, _xcpvalue2Write, setTime, tryCnt);
+  } else {
+    testStepFail("", "XCP Variable %s::%s NOT written after %d tries.", namespace_XCP, _xcpvariable2Set, tryCnt);
+  }
+  
+} 
+/*
+  XCP_to_Write_and_WaitUntilSetLongValueFloat: Function to pass the float values .
+*/
+void XCP_to_Write_and_WaitUntilSetLongValueFloat(char namespace_XCP[], char _xcpvariable2Set[], double _xcpvalue2Write)
+{
+  int status, isVariableSet, tryCnt, maxTryCnt;
+  long setTime, tryWaitTime;
+  dword timeStep;
+  long Read_status;
+
+  float _xcpvalueRecieved;
+  
+  timeStep = 10; //10ms
+  isVariableSet = 0;
+  tryCnt = 0;
+  tryWaitTime = 1000;
+
+  /*Set the XCP variables which correspnds to be tested*/
+  //teststep("_xcpvariable2Set %s=%d",_xcpvariable2Set,_xcpvalue2Write);
+  teststep("_xcpvariable2Set %s=%f",_xcpvariable2Set,_xcpvalue2Write);
+  
+  do{
+    tryCnt += 1;  //increase try counter
+    setTime = 0;
+    
+   //status = SysSetVariableInt(namespace_XCP, _xcpvariable2Set, _xcpvalue2Write); 
+      status = sysSetVariableFloat(namespace_XCP, _xcpvariable2Set, _xcpvalue2Write); 
+  //  TestWaitForTimeout(1000);
+    
+    if(status==0) //if _xcpvariable2Set was set without error
+    {
+      do{
+        TestWaitForTimeout(timeStep); //wait 10ms
+        setTime = setTime + timeStep; //calculate transcurred time
+        
+        Read_status = sysGetVariableFloat(namespace_XCP, _xcpvariable2Set, _xcpvalueRecieved);  //read value of resently set variable
+        if (_xcpvalueRecieved == _xcpvalue2Write && Read_status == 0){  //if read value = set value
+          isVariableSet = 1;
+        }
+      } while(isVariableSet!=1 && setTime < tryWaitTime);
+      
+      if (isVariableSet == 1){
+        //Nothing to do, it goes to the end of the function for setting the verdict.
+      } else {
+        testStep("", "XCP Variable %s::%s is NOT written at try Nr.: %d", namespace_XCP, _xcpvariable2Set, tryCnt);
+      }
+    }
+    else
+    {
+      testStep("XCP Error", "XCP Variable %s::%s is not written at try Nr.: %d. Error Code: %d ", namespace_XCP, _xcpvariable2Set, tryCnt, status);
+      testStep("ErrorCode", "     [1]:Name space not found; [2]:Variable not found; [3]:No writing right; [4]:variable type missmatch ");
+      TestStep("","Wait (100ms)");
+      TestWaitForTimeout(100); //wait 100ms for next try
+    }
+  }while(isVariableSet != 1 && tryCnt < 5);
+  
+  //Set verdict: 
+  //Pass if xcp variable successfully set, Fail if not.
+  if (isVariableSet == 1){
+    testStepPass("", "XCP Variable %s::%s successfully set to: %f; after %d ms at try Nr.: %d", namespace_XCP, _xcpvariable2Set, _xcpvalue2Write, setTime, tryCnt);
+  } else {
+    testStepFail("", "XCP Variable %s::%s NOT written after %d tries.", namespace_XCP, _xcpvariable2Set, tryCnt);
+  }
+  
+}
+
+void XCP_Await_Value_Match(char namespace_XCP[], char _xcpvariable2Read[],char Check_condition[], char description[],int _xcpvalue2Read, int64 _xcpexpiretime)
+{
+  int status, maxTryCnt,isVariableRead;
+  int64 setTime, tryWaitTime;
+  dword timeStep;
+  long Read_status;
+  long _xcpvalueRecieved;
+ 
+  isVariableRead = 0;
+  setTime = 0;
+  timeStep = 1; //1ms
+  tryWaitTime = _xcpexpiretime;  
+  
+  
+  do 
+  { 
+    TestWaitForTimeout(timeStep); //wait 1ms
+    setTime = setTime + timeStep; //calculate transcurred time
+    Read_status = SysGetVariableInt(namespace_XCP, _xcpvariable2Read, _xcpvalueRecieved);  //read value of resently set variable
+    //teststep("","_xcpvalueRecieved=%d",_xcpvalueRecieved);
+    //if (_xcpvalueRecieved == _xcpvalue2Read && Read_status == 0)  //if read value = received value && Read_status == 0
+    if(Read_status==0)
+    {
+      if(strncmp(Check_condition,Op_Equal,2) == 0)
+      { 
+        //testStep("Read XCP Signal","Read value of signal %s should be EQUAL to Expected value ?",_xcpvariable2Read);
+        if(_xcpvalue2Read == _xcpvalueRecieved)
+        {
+  		    isVariableRead = 1; 
+  		  }
+      }
+      else if(strncmp(Check_condition,Op_GreaterThanOrEq,2) == 0) //">="
+	    {
+        //testStep("Read XCP Signal","Read value of signal %s should be GREATER THAN OR EQUAL to Expected value ?",_xcpvariable2Read);
+  		  if(_xcpvalueRecieved >= _xcpvalue2Read)
+        {
+          isVariableRead = 1;
+  		  }
+	    }
+       else if(strncmp(Check_condition,Op_SmalerThanOrEq,2) == 0) //"<="
+	    {
+        //testStep("Read XCP Signal","Read value of signal %s should be LESS THAN OR EQUAL to Expected value ?",_xcpvariable2Read);
+  		  if(_xcpvalueRecieved <= _xcpvalue2Read)
+        {
+          isVariableRead = 1;
+  		  }
+	    }
+      else if(strncmp(Check_condition,Op_NEqual,2) == 0) //"!=" 
+	    {
+        //testStep("Read XCP Signal","Read value of signal %s should be NOT EQUAL to Expected value ?",_xcpvariable2Read);
+  		  if(_xcpvalueRecieved != _xcpvalue2Read)
+        {
+          isVariableRead = 1;
+  		  }
+	    }
+      else if(strncmp(Check_condition,Op_GreaterThan,2) == 0) //">" 
+	    {
+        //testStep("Read XCP Signal","Read value of signal %s should be GREATER to Expected value ?",_xcpvariable2Read);
+  		  if(_xcpvalueRecieved > _xcpvalue2Read)
+        {
+          isVariableRead = 1;
+  		  }
+	    }
+       else if(strncmp(Check_condition,Op_SmalerThan,2) == 0) //"<" 
+	    {
+        //testStep("Read XCP Signal","Read value of signal %s should be LESS to Expected value ?",_xcpvariable2Read);
+  		  if(_xcpvalueRecieved > _xcpvalue2Read)
+        {
+          isVariableRead = 1;
+  		  }
+	    }
+      else
+      {
+        isVariableRead = 0;
+      } 
+    }
+  } while(isVariableRead!=1 && setTime < tryWaitTime);     
+      
+  //Set verdict: 
+  //Pass if xcp variable successfully Read, Fail if not.
+  //testStep("Read XCP Variable","Read value of variable %s should be equal to expected value %d",_xcpvariable2Read,_xcpvalue2Read);
+  testStep("Read XCP Variable","Read value of variable %s should be %s to XCP Value2Read",_xcpvariable2Read,Check_condition);
+  
+  if (isVariableRead == 1)
+  {  
+   testStepPass("", "Value of XCP Variable %s matched the expected value %d \n received value is %d \n After %d ms ",_xcpvariable2Read, _xcpvalue2Read,_xcpvalueRecieved,setTime);
+   
+  } 
+  else
+  {
+    testStepFail("", "Value of XCP Variable %s does not match the expected value = %d \n Read Value is %d \n After %d ms",_xcpvariable2Read,_xcpvalue2Read,_xcpvalueRecieved,setTime);
+  }
+}
+
+export testfunction TF_Read_XCP(char XCP_Var[], Double ExpectedValue)
+{
+  Split_XCP(XCP_Var);
+  
+  XCP_to_Read(Split_XCP_Namespace, Split_XCP_Variable,ExpectedValue);
+}
+
+export testfunction TF_Write_XCP(char XCP_Var[], Double WriteValue)
+{
+  Split_XCP(XCP_Var);
+  
+  XCP_to_Write(Split_XCP_Namespace, Split_XCP_Variable,WriteValue);
+}
+
+export testfunction TF_Read_XCP_MultipleMempool(char XCP_Var[], int minMempool, int maxMempool, Double ExpectedValue)
+{
+  Split_XCP(XCP_Var);
+  
+  XCP_to_Read_MultiMempool(Split_XCP_Namespace, Split_XCP_Variable, minMempool, maxMempool, ExpectedValue);
+}
+
+export testfunction TF_WriteSystemVariable(char SysVarName[], double value)
+{
+  char sysvar_namespace[255], sysvar_variable[255];
+  int idx = -2, saved_index = 0, status, type;
+  
+  strncpy(sysvar_namespace,"",0);
+  strncpy(sysvar_variable,"",0);
+  idx=-2;
+  saved_index=0;
+  
+  while (idx != -1)
+  {
+     saved_index++;
+     idx = strstr_off(SysVarName,saved_index,"::");
+     if(idx != -1)
+     {
+      saved_index = idx;
+     }
+  }
+ 
+  for(idx = 0;idx < saved_index - 1; idx++)
+  {
+    sysvar_namespace[idx] = SysVarName[idx];
+  }
+  sysvar_namespace[idx] = '\0';
+ 
+  idx = 0;
+  for(saved_index = saved_index + 1; saved_index < elcount(SysVarName); saved_index++)
+  {
+    sysvar_variable[idx] = SysVarName[saved_index];
+    idx++;
+  } 
+
+  /*Set the XCP variables which correspnds to be tested*/
+  teststep("","Set %s::%s to value %lf",sysvar_namespace,sysvar_variable,value);
+  
+  type = sysGetVariableSVType(lookupSysvar(sysvar_namespace,sysvar_variable));
+  
+  if(type == 0)
+  {
+    testStepErrorInTestSystem("","XCP Variable %s::%s not found",sysvar_namespace,sysvar_variable);
+    return;
+  }
+  else if(type == 1)
+  {
+    status = sysSetVariableFloat(sysvar_namespace, sysvar_variable, value);
+  }
+  else if(type == 2)
+  {
+    status = sysSetVariableInt(sysvar_namespace, sysvar_variable, (int)value);
+  }
+  else if(type == 6)
+  {
+    status = sysSetVariableInt(sysvar_namespace, sysvar_variable, (int64)value);
+  }
+  
+  if(status == 0)
+  {
+    testStepPass("","XCP Variable %s::%s is %lf ", sysvar_namespace, sysvar_variable, value);
+  }
+  else
+  {
+    testStepfail("", "XCP Variable %s::%s is not written,Error code number is %lf ", sysvar_namespace, sysvar_variable, status);
+  }
+ 
+}
+
+export testfunction TF_ReadSystemVariable(char SysVarName[], double ExpectedValue)
+{
+  char sysvar_namespace[255], sysvar_variable[255];
+  int idx = -2, saved_index = 0, status, type;
+  long val_int;
+  double val_double;
+  int64 val_longlong;
+  
+  strncpy(sysvar_namespace,"",0);
+  strncpy(sysvar_variable,"",0);
+  idx=-2;
+  saved_index=0;
+  
+  while (idx != -1)
+  {
+     saved_index++;
+     idx = strstr_off(SysVarName,saved_index,"::");
+     if(idx != -1)
+     {
+      saved_index = idx;
+     }
+  }
+ 
+  for(idx = 0;idx < saved_index - 1; idx++)
+  {
+    sysvar_namespace[idx] = SysVarName[idx];
+  }
+  sysvar_namespace[idx] = '\0';
+ 
+  idx = 0;
+  for(saved_index = saved_index + 1; saved_index < elcount(SysVarName); saved_index++)
+  {
+    sysvar_variable[idx] = SysVarName[saved_index];
+    idx++;
+  } 
+
+  /*Set the XCP variables which correspnds to be tested*/
+  teststep("","Read %s::%s",sysvar_namespace,sysvar_variable);
+  
+  type = sysGetVariableSVType(lookupSysvar(sysvar_namespace,sysvar_variable));
+  
+  if(type == 0)
+  {
+    testStepErrorInTestSystem("","XCP Variable %s::%s not found",sysvar_namespace,sysvar_variable);
+    return;
+  }
+  else if(type == 1)
+  {
+    status = sysGetVariableFloat(sysvar_namespace, sysvar_variable, val_double);
+  }
+  else if(type == 2)
+  {
+    status = sysGetVariableInt(sysvar_namespace, sysvar_variable, val_int);
+    val_double = val_int;
+  }
+  else if(type == 6)
+  {
+    status = sysGetVariableLongLong(sysvar_namespace, sysvar_variable, val_longlong);
+    val_double = val_longlong;
+  }
+  
+  if(status == 0)
+  {
+    if((int)((val_double - ExpectedValue)*1000000) == 0)
+    {
+      testStepPass("","XCP Variable %s::%s is %lf ", sysvar_namespace, sysvar_variable, val_double);
+    }
+    else
+    {
+      testStepfail("", "XCP Variable %s::%s = %lf, does not have expected value %lf", sysvar_namespace, sysvar_variable, val_double,ExpectedValue);
+    }
+  }
+  else
+  {
+    testStepfail("", "XCP Variable %s::%s is not written,Error code number is %d ", sysvar_namespace, sysvar_variable, status);
+  }
+ 
+}
+
+export testfunction TF_WriteXCP_and_WaitUntilSet_LongValueFloat(char XCP_Var[], long xcpvalue2Write)
+{
+ Split_XCP(XCP_Var);
+  
+  XCP_to_Write_and_WaitUntilSetLongValueFloat(Split_XCP_Namespace, Split_XCP_Variable,xcpvalue2Write);
+}
+
+export testfunction TF_Read_XCP_MultipleMempool_Conditional(char XCP_Var[], char condition[], long _ExpectedValue, int MinMempoolCount, int MaxMempoolCount)
+{
+  Split_XCP(XCP_Var);
+  
+  XCP_to_Read_MultipleMempool_Conditional(Split_XCP_Namespace, Split_XCP_Variable, condition, _ExpectedValue, MinMempoolCount, MaxMempoolCount);
+}
+
+export testfunction TF_CompareSignal_with_XCP(char testSignal[], char XCP_Var[], double factor, double offset)
+{
+  Split_XCP(XCP_Var);
+  
+  XCP_Signal_Compare(testSignal, Split_XCP_Namespace, Split_XCP_Variable, factor, offset);
+}
+
+export testfunction TF_CompareSignal_with_XCP_with_Precondition(char testSignal[], char XCP_Var[], char xcp_precondition_var[], double preconditionValue, double factor, double offset)
+{
+  Split_XCP(XCP_Var);
+  
+  XCP_Signal_Compare_Precondition(testSignal, Split_XCP_Namespace, Split_XCP_Variable, xcp_precondition_var, preconditionValue, factor, offset);
+}
+
+export testfunction TF_ServiceSignal_to_XCP_Compare(char XCP_Var[], char Service_Signal[])
+{
+  Split_XCP(XCP_Var);
+  
+  XCP_to_ServiceSignal_Compare(Split_XCP_Namespace,Split_XCP_Variable,Service_Signal);
+}
+
+export testfunction TF_Write_XCP_and_WaitUntilSet(char XCP_Var[], int XCP_value_to_write)
+{
+  Split_XCP(XCP_Var);
+  
+  XCP_to_Write_and_WaitUntilSet(Split_XCP_Namespace, Split_XCP_Variable, XCP_value_to_write);
+}
+
+export testfunction TF_Write_XCP_and_WaitUntilSet_Long(char XCP_Var[], int XCP_value_to_write)
+{
+  Split_XCP(XCP_Var);
+  
+  XCP_to_Write_and_WaitUntilSetLongValues(Split_XCP_Namespace, Split_XCP_Variable, XCP_value_to_write);
+}
+
+export testfunction TF_Wait_for_Value_to_match_XCP(char XCP_Var[],char Check_condition[], char description[],int xcpvalue2Read,int64 expire_time)
+{
+  Split_XCP(XCP_Var);
+  
+  XCP_Await_Value_Match(Split_XCP_Namespace, Split_XCP_Variable, Check_condition, description, xcpvalue2Read,expire_time);
+}
+
+export testfunction TF_CheckSignalIncreasing(char SignalName[], int numberOfSamples, int sampleCollectionDelay)
+{
+  int resultState, i ;
+  double signalValue1, signalValue2;
+  
+  resultState = 1;
+  
+  for(i = 0; i < numberOfSamples; i++)
+  {
+    signalValue2 = getSignal(SignalName);
+    
+    if (signalValue2 <= signalValue1)
+    {
+      resultState = 0;
+    }  
+    testStep("", "Signal has Value = %lf",signalValue2);
+    signalValue1 = signalValue2;
+    
+    testWaitForTimeout(sampleCollectionDelay);
+  }
+  
+  if(resultState == 0)
+  {
+    testStepFail("","Signal is not increasing");
+  }
+  else
+  {
+    testStepPass("","Signal is increasing");
+  }
+}
+
+export testfunction TF_CheckSignalConditional(char SignalName[], char condition[], double value)
+{
+  double signalValue;
+  
+  signalValue = getSignal(SignalName);
+  
+  if(strncmp(condition,Op_Equal,2) == 0)
+      { 
+        //testStep("Read XCP Signal","Read value of signal %s should be EQUAL to Expected value ?",_xcpvariable2Read);
+        if((int)((signalValue - value) * 1000000) == 0)
+        {
+  		    testStepPass("","%s %s %lf",SignalName,condition,value);
+        }
+        else
+        {
+          testStepFail("","%s %s %lf",SignalName,condition,value);
+        }
+      }
+      else if(strncmp(condition,Op_GreaterThanOrEq,2) == 0) //">="
+	    {
+        //testStep("Read XCP Signal","Read value of signal %s should be GREATER THAN OR EQUAL to Expected value ?",_xcpvariable2Read);
+  		    if((int)((signalValue - value) * 1000000) >= 0)
+        {
+  		    testStepPass("","%s %s %lf",SignalName,condition,value);
+        }
+        else
+        {
+          testStepFail("","%s %s %lf",SignalName,condition,value);
+        }
+	    }
+       else if(strncmp(condition,Op_SmalerThanOrEq,2) == 0) //"<="
+	    {
+        //testStep("Read XCP Signal","Read value of signal %s should be LESS THAN OR EQUAL to Expected value ?",_xcpvariable2Read);
+  		  if((int)((value - signalValue) * 1000000) >= 0)
+        {
+  		    testStepPass("","%s %s %lf",SignalName,condition,value);
+        }
+        else
+        {
+          testStepFail("","%s %s %lf",SignalName,condition,value);
+        }
+	    }
+      else if(strncmp(condition,Op_NEqual,2) == 0) //"!=" 
+	    {
+        //testStep("Read XCP Signal","Read value of signal %s should be NOT EQUAL to Expected value ?",_xcpvariable2Read);
+  		    if((int)((signalValue - value) * 1000000) != 0)
+        {
+  		    testStepPass("","%s %s %lf",SignalName,condition,value);
+        }
+        else
+        {
+          testStepFail("","%s %s %lf",SignalName,condition,value);
+        }
+	    }
+      else if(strncmp(condition,Op_GreaterThan,2) == 0) //">" 
+	    {
+        //testStep("Read XCP Signal","Read value of signal %s should be GREATER to Expected value ?",_xcpvariable2Read);
+  		    if((int)((signalValue - value) * 1000000) > 0)
+        {
+  		    testStepPass("","%s %s %lf",SignalName,condition,value);
+        }
+        else
+        {
+          testStepFail("","%s %s %lf",SignalName,condition,value);
+        }
+	    }
+       else if(strncmp(condition,Op_SmalerThan,2) == 0) //"<" 
+	    {
+        //testStep("Read XCP Signal","Read value of signal %s should be LESS to Expected value ?",_xcpvariable2Read);
+  		  if((int)((value - signalValue) * 1000000) > 0)
+        {
+  		    testStepPass("","%s %s %lf",SignalName,condition,value);
+        }
+        else
+        {
+          testStepFail("","%s %s %lf",SignalName,condition,value);
+        }
+	    }
+}
+
+
+export testfunction TF_Read_XCP_Conditional(char XCP_Var[], char condition[], double value)
+{
+  double signalValue;
+  long tempXCPValue;
+  int Read_status;
+  
+  Split_XCP(XCP_Var);
+  
+  testStep("","XCP Variable Type = %d",sysGetVariableSVType(lookupSysvar(Split_XCP_Namespace, Split_XCP_Variable)));
+  if(sysGetVariableSVType(lookupSysvar(Split_XCP_Namespace, Split_XCP_Variable)) == 1)
+  {
+    Read_status = sysGetVariableFloat(Split_XCP_Namespace, Split_XCP_Variable, signalValue);
+  }
+  else
+  {
+    Read_status = sysGetVariableInt(Split_XCP_Namespace, Split_XCP_Variable, tempXCPValue);
+    signalValue = (double)tempXCPValue;
+  }
+  teststep("","expected value %lf",value);  
+  
+  if(strncmp(condition,Op_Equal,2) == 0)
+      { 
+        //testStep("Read XCP Signal","Read value of signal %s should be EQUAL to Expected value ?",_xcpvariable2Read);
+        if((int)((signalValue - value) * 1000000) == 0)
+        {
+  		    testStepPass("","%s::%s %s %lf",Split_XCP_Namespace,Split_XCP_Variable,condition,value);
+        }
+        else
+        {
+          testStepFail("","%s::%s %s %lf",Split_XCP_Namespace, Split_XCP_Variable,condition,value);
+        }
+      }
+      else if(strncmp(condition,Op_GreaterThanOrEq,2) == 0) //">="
+	    {
+        //testStep("Read XCP Signal","Read value of signal %s should be GREATER THAN OR EQUAL to Expected value ?",_xcpvariable2Read);
+  		    if((int)((signalValue - value) * 1000000) >= 0)
+        {
+  		    testStepPass("","%s::%s %s %lf",Split_XCP_Namespace, Split_XCP_Variable,condition,value);
+        }
+        else
+        {
+          testStepFail("","%s::%s %s %lf",Split_XCP_Namespace, Split_XCP_Variable,condition,value);
+        }
+	    }
+       else if(strncmp(condition,Op_SmalerThanOrEq,2) == 0) //"<="
+	    {
+        //testStep("Read XCP Signal","Read value of signal %s should be LESS THAN OR EQUAL to Expected value ?",_xcpvariable2Read);
+  		  if((int)((value - signalValue) * 1000000) >= 0)
+        {
+  		    testStepPass("","%s::%s %s %lf",Split_XCP_Namespace, Split_XCP_Variable,condition,value);
+        }
+        else
+        {
+          testStepFail("","%s::%s %s %lf",Split_XCP_Namespace, Split_XCP_Variable,condition,value);
+        }
+	    }
+      else if(strncmp(condition,Op_NEqual,2) == 0) //"!=" 
+	    {
+        //testStep("Read XCP Signal","Read value of signal %s should be NOT EQUAL to Expected value ?",_xcpvariable2Read);
+  		    if((int)((signalValue - value) * 1000000) != 0)
+        {
+  		    testStepPass("","%s::%s %s %lf",Split_XCP_Namespace, Split_XCP_Variable,condition,value);
+        }
+        else
+        {
+          testStepFail("","%s %s %lf",Split_XCP_Namespace, Split_XCP_Variable,condition,value);
+        }
+	    }
+      else if(strncmp(condition,Op_GreaterThan,2) == 0) //">" 
+	    {
+        //testStep("Read XCP Signal","Read value of signal %s should be GREATER to Expected value ?",_xcpvariable2Read);
+  		  if((int)((signalValue - value) * 1000000) > 0)
+        {
+  		    testStepPass("","%s::%s %s %lf",Split_XCP_Namespace, Split_XCP_Variable,condition,value);
+        }
+        else
+        {
+          testStepFail("","%s::%s %s %lf",Split_XCP_Namespace, Split_XCP_Variable,condition,value);
+        }
+	    }
+       else if(strncmp(condition,Op_SmalerThan,2) == 0) //"<" 
+	    {
+        //testStep("Read XCP Signal","Read value of signal %s should be LESS to Expected value ?",_xcpvariable2Read);
+  		  if((int)((value - signalValue) * 1000000) > 0)
+        {
+  		    testStepPass("","%s::%s %s %lf",Split_XCP_Namespace, Split_XCP_Variable,condition,value);
+        }
+        else
+        {
+          testStepFail("","%s::%s %s %lf",Split_XCP_Namespace, Split_XCP_Variable,condition,value);
+        }
+	    }
+ }
+
+export testfunction TF_Check_XCP_Signal_Increasing(char XCP_Var[], int numberOfSamples, int sampleCollectionDelay)
+{
+  int resultState, i, Read_status ;
+  long tempXCPValue;
+  double signalValue1, signalValue2;
+  
+  resultState = 1;
+  
+  Split_XCP(XCP_Var);
+  testStep("","XCP Variable Type = %d",sysGetVariableSVType(lookupSysvar(Split_XCP_Namespace, Split_XCP_Variable)));
+ 
+  for(i = 0; i < numberOfSamples; i++)
+  {   
+    
+    if(sysGetVariableSVType(lookupSysvar(Split_XCP_Namespace, Split_XCP_Variable)) == 1)
+    {
+      Read_status = sysGetVariableFloat(Split_XCP_Namespace, Split_XCP_Variable, signalValue2);
+    }
+    else
+    {
+      Read_status = sysGetVariableInt(Split_XCP_Namespace, Split_XCP_Variable, tempXCPValue);
+      signalValue2 = (double)tempXCPValue;
+    }
+      
+    if (signalValue2 <= signalValue1)
+    {
+      resultState = 0;
+    }  
+    testStep("", "Signal has Value = %lf",signalValue2);
+    signalValue1 = signalValue2;
+    
+    testWaitForTimeout(sampleCollectionDelay);
+  }
+  
+  if(resultState == 0)
+  {
+    testStepFail("","Signal is not increasing");
+  }
+  else
+  {
+    testStepPass("","Signal is increasing");
+  }
+}
+export testfunction TF_SoftwareFlash()
+{
+  testWaitForSyscall("C:\\Flash\\Test.bat",0,(1000*60*4));
+}
+export testfunction TF_Arithmetic_XCP(char First_XCP_var[], char Second_XCP_var[], char operator[],char condition[],double expectedValue)
+{
+  double XCP_Value1, XCP_Value2, calculatedValue;
+  
+  long Read_status;
+  double _xcpvalueRecieved;
+  long tempXCPValue;
+  
+  Split_XCP(First_XCP_var);
+   
+  if(sysGetVariableSVType(lookupSysvar(Split_XCP_Namespace, Split_XCP_Variable)) == 1)
+  {
+    Read_status = sysGetVariableFloat(Split_XCP_Namespace, Split_XCP_Variable, XCP_Value1);
+  }
+  else
+  {
+    Read_status = sysGetVariableInt(Split_XCP_Namespace, Split_XCP_Variable, tempXCPValue);
+    XCP_Value1 = (double)tempXCPValue;
+  }
+  teststep("","XCP Var %s::%s has value %lf", Split_XCP_Namespace, Split_XCP_Variable, XCP_Value1);  
+    
+  if(Read_status == 2)
+  {
+    testStepErrorInTestSystem("","Error reading XCP var %s::%s, Return Val: %d - Variable was not found",Split_XCP_Namespace, Split_XCP_Variable, Read_status);
+  } 
+  else if(Read_status == 4)
+  {
+    testStepErrorInTestSystem("","Error reading XCP var %s::%s, Return Val: %d - Variable has no suitable type for the function", Split_XCP_Namespace, Split_XCP_Variable,Read_status);
+  }
+  else
+  {
+    testStepErrorInTestSystem("","Error reading XCP var %s::%s, Return Val: %d - Unkown", Split_XCP_Namespace, Split_XCP_Variable,Read_status);
+  }
+  
+  Split_XCP(Second_XCP_var);
+   
+  if(sysGetVariableSVType(lookupSysvar(Split_XCP_Namespace, Split_XCP_Variable)) == 1)
+  {
+    Read_status = sysGetVariableFloat(Split_XCP_Namespace, Split_XCP_Variable, XCP_Value1);
+  }
+  else
+  {
+    Read_status = sysGetVariableInt(Split_XCP_Namespace, Split_XCP_Variable, tempXCPValue);
+    XCP_Value2 = (double)tempXCPValue;
+  }
+  teststep("","XCP Var %s::%s has value %lf", Split_XCP_Namespace, Split_XCP_Variable, XCP_Value2);  
+    
+  if(Read_status == 2)
+  {
+    testStepErrorInTestSystem("","Error reading XCP var %s::%s, Return Val: %d - Variable was not found",Split_XCP_Namespace, Split_XCP_Variable, Read_status);
+  } 
+  else if(Read_status == 4)
+  {
+    testStepErrorInTestSystem("","Error reading XCP var %s::%s, Return Val: %d - Variable has no suitable type for the function", Split_XCP_Namespace, Split_XCP_Variable,Read_status);
+  }
+  else
+  {
+    testStepErrorInTestSystem("","Error reading XCP var %s::%s, Return Val: %d - Unkown", Split_XCP_Namespace, Split_XCP_Variable,Read_status);
+  }
+  
+  if(strncmp(operator,"+",1)==0)
+  {
+    calculatedValue = XCP_Value1 + XCP_Value2;
+  }
+  else if(strncmp(operator,"-",1)==0)
+  {
+    calculatedValue = XCP_Value1 - XCP_Value2;
+  }
+  else if(strncmp(operator,"*",1)==0)
+  {
+    calculatedValue = XCP_Value1 * XCP_Value2;
+  }
+  else if(strncmp(operator,"/",1)==0)
+  {
+    calculatedValue = XCP_Value1 / XCP_Value2;
+  }
+  else
+  {
+    testStepErrorInTestSystem("","Invalid operator");
+  }
+  
+  if(Read_status==0)
+      {
+        if(strncmp(condition,"==",2))
+        {
+           if((int)((calculatedValue - expectedValue)*1000000) == 0)
+            {        
+              testStepPass("","Calculated Value = &lf, Expected value ", calculatedValue);
+            }
+            else
+            {
+              testStepFail("","Calculated Value = &lf, Expected value ", calculatedValue);
+            }
+        }
+        else if(strncmp(condition,"!=",2))
+        {
+           if(_xcpvalueRecieved!=expectedValue)        
+            {        
+              testStepPass("","XCP Variable %s::%s is %d ", Split_XCP_Namespace, Split_XCP_Variable, expectedValue);             
+            }
+            else
+            {
+              testStepFail("","XCP Variable %s::%s is %d ", Split_XCP_Namespace, Split_XCP_Variable, expectedValue);
+            }
+        }
+        else if(strncmp(condition,"<=",2))
+        {
+           if(_xcpvalueRecieved<=expectedValue)        
+            {        
+              testStepPass("","XCP Variable %s::%s is %d ", Split_XCP_Namespace, Split_XCP_Variable, expectedValue);
+            }
+            else
+            {
+               testStepFail("","XCP Variable %s::%s is %d ", Split_XCP_Namespace, Split_XCP_Variable, expectedValue);
+            }
+        }
+        else if(strncmp(condition,">=",2))
+        {
+           if(_xcpvalueRecieved>=expectedValue)        
+            {        
+              testStepPass("","XCP Variable %s::%s is %d ", Split_XCP_Namespace, Split_XCP_Variable, expectedValue);
+            }
+            else
+            {
+              testStepFail("","XCP Variable %s::%s is %d ", Split_XCP_Namespace, Split_XCP_Variable, expectedValue);
+            }
+        }
+        else if(strncmp(condition,">",1))
+        {
+           if(_xcpvalueRecieved > expectedValue)        
+            {        
+              testStepPass("","XCP Variable %s::%s is %d ", Split_XCP_Namespace, Split_XCP_Variable, expectedValue);
+            }
+            else
+            {
+              testStepFail("","XCP Variable %s::%s is %d ", Split_XCP_Namespace, Split_XCP_Variable, expectedValue);
+            }
+        }
+        else if(strncmp(condition,"<",1))
+        {
+           if(_xcpvalueRecieved < expectedValue)        
+            {        
+              testStepPass("","XCP Variable %s::%s is %d ", Split_XCP_Namespace, Split_XCP_Variable, expectedValue);
+            }
+            else
+            {
+              testStepFail("","XCP Variable %s::%s is %d ", Split_XCP_Namespace, Split_XCP_Variable, expectedValue);
+            }
+        }
+        else
+        {
+          testStep("", "XCP Variable %s::%s is not written,Error code number is %d. Obtained value is %d ", Split_XCP_Namespace, Split_XCP_Variable, Read_status, _xcpvalueRecieved);
+        }
+      }
+      else
+      {
+        if(Read_status == 2)
+        {
+          testStepErrorInTestSystem("","Error reading XCP var %s::%s, Return Val: %d - Variable was not found",Split_XCP_Namespace,Split_XCP_Variable, Read_status);
+        } 
+        else if(Read_status == 4)
+        {
+          testStepErrorInTestSystem("","Error reading XCP var %s::%s, Return Val: %d - Variable has no suitable type for the function", Split_XCP_Namespace,Split_XCP_Variable, Read_status);
+        }
+        else
+        {
+          testStepErrorInTestSystem("","Error reading XCP var %s::%s, Return Val: %d - Unknown", Split_XCP_Namespace, Split_XCP_Variable, Read_status);
+        }
+      }
+    
+}
+
+export testfunction TF_Read_XCP_FIFO(char FIFO_XCP_var[], char topWindow_XCP_var[], double expected_FIFO_Value)
+{
+  //Region "Get topWindow Index" 
+    
+  long Read_status;
+  double _xcpvalueRecieved;
+  long tempXCPValue;  
+  long fifo_index;
+  int replaceIndex;
+  
+  Split_XCP(topWindow_XCP_var);  
+ 
+  /*Set the XCP variables which correspnds to be tested*/
+  testStep("","XCP Variable Type = %d",sysGetVariableSVType(lookupSysvar(Split_XCP_Namespace, Split_XCP_Variable)));
+  if(sysGetVariableSVType(lookupSysvar(Split_XCP_Variable, Split_XCP_Variable)) == 1)
+  {
+    Read_status = sysGetVariableFloat(Split_XCP_Variable, Split_XCP_Variable, _xcpvalueRecieved);
+    fifo_index = (int)_xcpvalueRecieved;
+  }
+  else
+  {
+    Read_status = sysGetVariableInt(Split_XCP_Variable, Split_XCP_Variable, fifo_index);
+  }
+  
+  if(Read_status==0)
+  {
+     testStep("","Top Window XCP Variable %s::%s is %lf ", Split_XCP_Variable, Split_XCP_Variable, fifo_index);
+  }
+  else
+  {
+    if(Read_status == 2)
+    {
+      testStepErrorInTestSystem(Split_XCP_Variable,"Error reading XCP var, Return Val: %d - Variable was not found", Read_status);
+    } 
+    else if(Read_status == 4)
+    {
+      testStepErrorInTestSystem(Split_XCP_Variable,"Error reading XCP var, Return Val: %d - Variable has no suitable type for the function", Read_status);
+    }
+    else
+    {
+      testStepErrorInTestSystem(Split_XCP_Variable,"Error reading XCP var, Return Val: %d - Unkown", Read_status);
+    }
+  }  
+  
+  replaceIndex = strstr(FIFO_XCP_var,"@");
+  FIFO_XCP_var[replaceIndex] = (char)(fifo_index + 48);
+  Split_XCP(FIFO_XCP_var);
+  
+  XCP_to_Read(Split_XCP_Namespace, Split_XCP_Variable,expected_FIFO_Value);
+}
